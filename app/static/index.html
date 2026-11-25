@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrintQR – Quản lý in ấn cá nhân hóa kèm VietQR</title>
+<!-- [SEG] Khung giao diện và định dạng CSS -->
+<style>
+  :root { --bg:#f6f8fb; --card:#fff; --ink:#1b2430; --accent:#1f4e79; --line:#d9e1ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10151c; --card:#18202b; --ink:#e6edf5; --accent:#6aa6e0; --line:#2b3748; } }
+  body { margin:0; font-family:Segoe UI, Arial, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:14px 24px; font-size:20px; font-weight:600; }
+  nav button { margin:10px 4px 0 0; padding:8px 14px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; border-radius:6px; }
+  nav button.on { background:var(--accent); color:#fff; }
+  main { padding:0 24px 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:12px; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; }
+  input, select, textarea { padding:6px; margin:4px 6px 4px 0; border:1px solid var(--line); border-radius:4px; background:var(--card); color:var(--ink); }
+  textarea { width:100%; height:130px; font-family:Consolas, monospace; }
+  .act { padding:3px 8px; margin:1px; font-size:12px; cursor:pointer; }
+  #msg { margin-top:10px; padding:8px 12px; border-radius:6px; display:none; }
+  .ok { background:#d1e7dd; color:#0f5132; } .err { background:#f8d7da; color:#842029; }
+  img.qr { width:140px; height:140px; background:#fff; padding:6px; }
+</style>
+</head>
+<body>
+<header>PrintQR – Hệ thống in ấn cá nhân hóa tốc độ cao kèm VietQR</header>
+<main>
+<nav>
+  <button data-tab="jobs" class="on">Lệnh in</button>
+  <button data-tab="neworder">Tạo đơn</button>
+  <button data-tab="pay">Đối soát</button>
+  <button data-tab="search">Tìm kiếm ngữ nghĩa</button>
+  <button data-tab="report">Báo cáo</button>
+</nav>
+<div id="msg"></div>
+
+<!-- [SEG] Các tab chức năng -->
+<section id="jobs" class="card"></section>
+
+<section id="neworder" class="card" hidden>
+  <h3>Tạo đơn in và nhập dữ liệu cá nhân hóa</h3>
+  <select id="cust"></select> <select id="tpl"></select>
+  <input id="qty" type="number" min="1" value="3" style="width:90px"> tờ
+  <button onclick="createOrder()">Tạo đơn + lệnh in</button>
+  <p>Dữ liệu cá nhân hóa (mảng JSON, mỗi phần tử cần <code>full_name</code> và <code>total</code>):</p>
+  <textarea id="jsondata">[{"full_name":"Nguyễn An","total":1500000},{"full_name":"Lê Bình","total":2000000},{"full_name":"Trần Cường","total":900000}]</textarea>
+  <p>Lệnh in vừa tạo: <b id="curjob">chưa có</b></p>
+</section>
+
+<section id="pay" class="card" hidden>
+  <h3>Mô phỏng webhook ngân hàng</h3>
+  <input id="txn" placeholder="Mã giao dịch" value="FT26112000001">
+  <input id="content" placeholder="Nội dung chuyển khoản (chứa mã PQ…)" style="width:300px">
+  <input id="amount" type="number" placeholder="Số tiền">
+  <input id="payer" placeholder="Người chuyển" value="NGUYEN VAN A">
+  <button onclick="sendWebhook()">Gửi giao dịch</button>
+  <h3>Mã VietQR của lệnh in</h3>
+  <input id="qrjob" type="number" placeholder="job_id"> <button onclick="showQr()">Xem danh sách QR</button>
+  <div id="qrlist"></div>
+</section>
+
+<section id="search" class="card" hidden>
+  <h3>Tìm mẫu in / sản phẩm theo ý nghĩa</h3>
+  <input id="q" style="width:420px" value="phiếu thu tiền học có mã QR thanh toán">
+  <button onclick="semantic()">Tìm</button>
+  <div id="sresult"></div>
+</section>
+
+<section id="report" class="card" hidden></section>
+
+<!-- [SEG] Mã JavaScript gọi REST API -->
+<script>
+const $ = id => document.getElementById(id);
+let currentJob = null;
+
+function notify(text, ok = true) {
+  const m = $('msg'); m.textContent = text; m.className = ok ? 'ok' : 'err'; m.style.display = 'block';
+  setTimeout(() => m.style.display = 'none', 6000);
+}
+async function api(url, method = 'GET', body) {
+  const r = await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { notify(data.detail || 'Lỗi hệ thống', false); throw new Error(data.detail); }
+  return data;
+}
+const table = (rows, cols) => '<table><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>' +
+  rows.map(r => '<tr>' + cols.map(c => `<td>${r[c] ?? ''}</td>`).join('') + '</tr>').join('') + '</table>';
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('main > section').forEach(s => s.hidden = s.id !== b.dataset.tab);
+  if (b.dataset.tab === 'jobs') loadJobs();
+  if (b.dataset.tab === 'report') loadReport();
+});
+
+async function loadJobs() {
+  const rows = await api('/api/jobs');
+  rows.forEach(r => r.thao_tac = ['assign', 'start', 'print', 'finish'].map(a =>
+    `<button class="act" onclick="jobAction(${r.job_id}, '${a}')">${a}</button>`).join(''));
+  $('jobs').innerHTML = '<h3>Danh sách lệnh in</h3>' + table(rows,
+    ['job_code','order_code','customer_name','status','quantity','printed_count','progress','machine_name','eta_minutes','collection_pct','thao_tac']);
+}
+async function jobAction(id, action) {
+  const url = `/api/jobs/${id}/${action}` + (action === 'assign' ? '?operator_id=1' : action === 'print' ? '?batch=2' : '');
+  await api(url, 'POST'); notify(`Đã thực hiện ${action} cho lệnh in ${id}`); loadJobs();
+}
+
+async function loadCustomers() {
+  $('cust').innerHTML = (await api('/api/customers')).map(c => `<option value="${c.customer_id}">${c.customer_name}</option>`).join('');
+  loadTemplates();
+}
+async function loadTemplates() {
+  $('tpl').innerHTML = (await api('/api/templates?customer_id=' + $('cust').value)).map(t => `<option value="${t.template_id}">${t.template_name}</option>`).join('');
+}
+$('cust').onchange = loadTemplates;
+
+async function createOrder() {
+  const records = JSON.parse($('jsondata').value);
+  const o = await api('/api/orders', 'POST', { customer_id: +$('cust').value, template_id: +$('tpl').value, quantity: +$('qty').value });
+  await api(`/api/jobs/${o.jid}/import`, 'POST', records);
+  const q = await api(`/api/jobs/${o.jid}/qr`, 'POST');
+  currentJob = o.jid; $('curjob').textContent = `job_id ${o.jid} (đã sinh ${q.n} mã VietQR)`;
+  notify('Đã tạo đơn, nhập dữ liệu và sinh mã VietQR');
+}
+
+async function showQr() {
+  const rows = await api(`/api/jobs/${$('qrjob').value}/records`);
+  $('qrlist').innerHTML = table(rows.map(r => ({...r, qr: r.qr_ref ? `<img class="qr" src="/api/qr/${r.qr_ref}.png">` : ''})),
+    ['seq_no','recipient_name','amount','print_status','qr_ref','qr_status','qr']);
+}
+async function sendWebhook() {
+  const r = await api('/api/webhook/bank', 'POST', { transaction_id: $('txn').value, content: $('content').value,
+    amount: +$('amount').value, payer_name: $('payer').value });
+  notify('Kết quả đối soát: ' + r.match_status);
+}
+
+async function semantic() {
+  const t = await api('/api/search/templates?q=' + encodeURIComponent($('q').value));
+  const p = await api('/api/recommend/products?q=' + encodeURIComponent($('q').value));
+  $('sresult').innerHTML = '<h4>Mẫu in gần nghĩa nhất</h4>' + table(t, ['template_name','customer_name','distance']) +
+                           '<h4>Sản phẩm gợi ý</h4>' + table(p, ['product_code','product_name','unit_price','distance']);
+}
+async function loadReport() {
+  const d = await api('/api/dashboard');
+  $('report').innerHTML = '<h3>Hiệu suất máy in</h3>' + table(d.machines, ['machine_code','speed_ppm','total_printed','printed_rank','share_pct']) +
+    '<h3>Thu tiền theo ngày</h3>' + table(d.daily, ['pay_date','txn_count','daily_amount','running_total','diff_vs_prev']) +
+    '<h3>Khách hàng</h3>' + table(d.customers, ['customer_name','order_count','print_fee','revenue_rank','tier']);
+}
+loadJobs(); loadCustomers();
+</script>
+</main>
+</body>
+</html>
